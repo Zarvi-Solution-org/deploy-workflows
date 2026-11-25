@@ -1,0 +1,57 @@
+name: Laravel Deploy (shared)
+
+on:
+  workflow_call:
+    inputs:
+      app_path:
+        description: "Server path, e.g. /var/www/laravel-apps/looklab-backend"
+        required: true
+        type: string
+      branch:
+        required: false
+        type: string
+        default: main
+      build_assets:
+        description: "Run npm ci && npm run build (Vite / Inertia / Filament assets)"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          command_timeout: 30m
+          script: |
+            set -e
+            cd "${{ inputs.app_path }}"
+            echo "▶ Deploying $(pwd) from branch ${{ inputs.branch }}"
+
+            php artisan down --retry=15 || true
+            # Always bring the site back up, even if a step fails
+            trap 'php artisan up' EXIT
+
+            # --ff-only: stops safely if the server has local changes or diverged history
+            git pull --ff-only origin "${{ inputs.branch }}"
+
+            composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist
+
+            if [ "${{ inputs.build_assets }}" = "true" ]; then
+              if [ -f package-lock.json ]; then npm ci; else npm install; fi
+              npm run build
+            fi
+
+            php artisan migrate --force
+            php artisan config:cache
+            php artisan route:cache
+            php artisan view:cache
+            php artisan queue:restart || true
+
+            echo "✅ Deployed: $(git log -1 --oneline)"
